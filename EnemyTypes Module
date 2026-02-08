@@ -1,0 +1,40 @@
+local EnemyTypes = {
+
+	["Runner"] = {
+		Speed = 30,
+		Damage = 18,
+		Range = 1,
+		Cooldown = 0.5,
+		Health = 50
+
+	}, 
+
+	["Tank"] = {
+		Speed = 19,
+		Damage = 30,
+		Range = 5,
+		Cooldown = 1,
+		Health = 300
+	},
+
+	["Walker"] = {
+		Speed = 23,
+		Damage = 10,
+		Range = 5,
+		Cooldown = 0.8,
+		Health = 100
+	},
+	
+	["Archer"] = {
+		Speed = 23,
+		Damage = 10,
+		Range = 10,
+		Cooldown = 0.8,
+		Health = 100
+	}
+
+}
+
+
+
+return EnemyTypes
