@@ -1,0 +1,86 @@
+--// This is the central enemy handler. Instead of unoptimally giving each enemy body an individual brain,
+-- // we simply have a central handler control them all, like a horde.
+
+local EnemyAI = require(game.ServerStorage.SSModules.EnemyAI)
+local EnemyTypes = require(game.ReplicatedStorage.Modules.EnemyTypes)
+local EnemyFolder = workspace.Enemies
+local Players  = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local ss = game.ServerStorage
+
+-- // Function used to spawn the enemy in the workspace.
+local function SpawnEnemy(typeName, spawnLocation, amount)
+	amount = amount or 1
+
+	local config = EnemyTypes[typeName]
+
+
+	for i = 1, amount do
+		local newEnemy = ss.EnemyModels.Rig:Clone()
+
+		newEnemy.Name = typeName
+		newEnemy.Parent = workspace.Enemies
+		local offset = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
+		newEnemy:PivotTo(CFrame.new(spawnLocation + offset))
+
+		-- apply stats
+		EnemyAI.Initialize(newEnemy, config)
+
+		-- set network ownership 
+		newEnemy.PrimaryPart:SetNetworkOwner(nil)
+	end
+end
+
+
+-- // This script sets up single use triggers that spawn a specific group of enemies(not hard coded, can be changed by changing the attributes in the trigger part.)
+-- // the moment a player steps on them
+for _, trigger in ipairs(workspace.EnemyTriggers:GetChildren()) do
+	local hasTriggered = false
+	trigger.Touched:Connect(function(hit)
+		if hasTriggered then return end
+
+		local enemyToSpawn = trigger:GetAttribute("EnemyType") 
+		local AmountToSpawn = trigger:GetAttribute("Amount") 
+		local WhereToSpawn = trigger:GetAttribute("SpawnLocation")
+
+		local player = Players:GetPlayerFromCharacter(hit.Parent)
+		if player then
+			hasTriggered = true
+			SpawnEnemy(enemyToSpawn, WhereToSpawn, AmountToSpawn)
+
+			trigger:Destroy()
+
+
+		end
+	end)
+end 
+
+
+-- // Telling the AI to move once its found a target. It checks for the target every 0.5 seconds.
+while task.wait(0.5) do -- How often the AI updates
+	for _, enemy in pairs(EnemyFolder:GetChildren()) do
+		local hrp = enemy:FindFirstChild("HumanoidRootPart")
+		local hum = enemy:FindFirstChild("Humanoid")
+
+		if hrp and hum and hum.Health > 0 then
+			-- 1. Find the target
+			local target, dist = EnemyAI.GetClosestPlayer(hrp)
+			
+			local EnemyType = enemy:GetAttribute("EnemyType")
+
+			if target then
+				-- 2. Move
+				EnemyAI.Move(enemy, target, dist)
+			
+		else -- if the enemy is dead
+			Debris:AddItem(enemy, 1)
+			print("Enemy destroyed")
+		end
+		end
+	end
+end
+
+
+-- Name, spawnlocation, and amount
+-- SpawnEnemy("Tank", CFrame.new(0, 5, 10), 5)
+-- SpawnEnemy("Runner", CFrame.new(5, 5, 15), 5)
