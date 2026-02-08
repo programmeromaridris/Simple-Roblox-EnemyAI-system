@@ -1,0 +1,137 @@
+// This script is kept in ServerStorage, so that it's easily accessible by the server.
+
+// Services
+local PFS = game:GetService("PathfindingService")
+local Players = game:GetService("Players")
+local EnemyAI = {}
+
+
+-- // Config
+local ATTACK_RANGE = 5
+local ATTACK_DAMAGE = 10
+local ATTACK_COOLDOWN = 0.2
+
+local PATH_UPDATE_DELAY = 0.6 -- how often to recalculate paths
+
+
+-- // Constructor: assign each new enemy it's stats from the EnemyTypes config table.
+function EnemyAI.Initialize(enemy, config)
+	local humanoid = enemy:FindFirstChild("Humanoid")
+
+	enemy:SetAttribute("EnemyID", math.random(1, 10000))
+	enemy:SetAttribute("Damage", config.Damage)
+	enemy:SetAttribute("Cooldown", config.Cooldown)
+	enemy:SetAttribute("Range", config.Range)
+	enemy:SetAttribute("RangeStyle", config.EnemyRange)
+	enemy:SetAttribute("LastAttack", 0)
+
+	humanoid.MaxHealth = config.Health
+	humanoid.Health = config.Health
+	humanoid.WalkSpeed = config.Speed
+
+
+end
+
+
+-- // Helper function that will allow the AI to calculate it's nearest player to start chasing.
+-- // We circle through every player in the server, then subtract the enemy's distance from the player's distance and return the closest one.
+function EnemyAI.GetClosestPlayer(enemyPart)
+	local closestPlayer = nil
+	local shortestDist = math.huge
+
+	for _, player in pairs(Players:GetPlayers()) do
+		local char = player.Character
+		if char and  char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then 
+			local dist = (enemyPart.Position - char.PrimaryPart.Position).Magnitude
+			if dist < shortestDist then 
+				shortestDist = dist
+				closestPlayer = char
+			end
+		end
+	end
+	return closestPlayer, shortestDist
+end
+
+
+
+-- // We shoot a raycast from the enemy's primarypart. if it hits the target, or the raycast hasn't struck an obstacle,
+-- // then it has a "line of sight" and can move to attack the target.
+
+function EnemyAI.CheckLineOfSight(enemy, target)
+	local hrp = enemy.PrimaryPart
+	local targetHrp = target.PrimaryPart
+
+	local rayDirection = (targetHrp.Position - hrp.Position)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterDescendantsInstances = {enemy, workspace.Enemies} -- ignore other enemies and itself
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local result = workspace:Raycast(hrp.Position, rayDirection, raycastParams)
+
+	-- If the ray hits the target (or nothing, meaning air), we have LoS
+	if result and result.Instance:IsDescendantOf(target) then
+		return true
+	end
+	return false
+end
+
+
+
+-- // This prevents enemies conga-lining behind eachother. We use the enemy's unique ID in the workspace as an offset.
+function EnemyAI.GetSurroundOffset(enemy)
+
+
+	local seed = enemy:GetAttribute("EnemyID") 
+	local angle  = (seed * math.random(15, 30)) % 360
+	local radius = 6 -- distance from player
+
+	local x = math.cos(math.rad(angle)) * radius
+	local z = math.sin(math.rad(angle)) * radius
+
+	return Vector3.new(x, 0, z)
+
+end
+
+
+-- // Lazy way of dealing with damage. This just subtracts the enemies damage from the target's health -If it is in range.
+function EnemyAI.Attack(enemy, target)
+	local humanoid = enemy:FindFirstChild("Humanoid")
+	local targetHum = target:FindFirstChild("Humanoid")
+
+	local lastAttack = enemy:GetAttribute("LastAttack") or 0
+	if tick() - lastAttack >= ATTACK_COOLDOWN then
+		targetHum:TakeDamage(ATTACK_DAMAGE) 
+		enemy:SetAttribute("LastAttack", tick())
+		print("Enemy dealt damage!")
+	end
+end
+
+
+-- // Checking if it has a line of sight, it begins chasing the target. 
+function EnemyAI.Move(enemy, target, dist)
+	local humanoid = enemy:FindFirstChild("Humanoid")
+	local hrp = enemy:FindFirstChild("HumanoidRootPart")
+	local range = enemy:GetAttribute("Range")
+
+	local hasLoS = EnemyAI.CheckLineOfSight(enemy, target)
+
+	if hasLoS then
+		-- state chasing
+		enemy:SetAttribute("LastKnownPos", target.PrimaryPart.Position)
+
+		if dist <= range then
+			EnemyAI.Attack(enemy, target)
+			humanoid:MoveTo(hrp.Position)
+		else
+			local offset = EnemyAI.GetSurroundOffset(enemy)
+			humanoid:MoveTo(target.PrimaryPart.Position + offset)
+		end
+	else
+		-- state searching
+		enemy:SetAttribute("LastKnownPos", nil)
+
+	end
+end
+
+
+return EnemyAI
