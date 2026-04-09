@@ -1,86 +1,199 @@
---// This is the central enemy handler. Instead of unoptimally giving each enemy body an individual brain,
--- // we simply have a central handler control them all, like a horde.
+-- NOTE:
+-- this script is just temporary and is used for debugging the enemy logic
+-- when the gamestate handler is made the gamestate handler will just take over this script's logic
 
-local EnemyAI = require(game.ServerStorage.SSModules.EnemyAI)
-local EnemyTypes = require(game.ReplicatedStorage.Modules.EnemyTypes)
-local EnemyFolder = workspace.Enemies
-local Players  = game:GetService("Players")
+
+local Players = game:GetService("Players")
+local RS = game:GetService("RunService")
 local Debris = game:GetService("Debris")
-local ss = game.ServerStorage
 
--- // Function used to spawn the enemy in the workspace.
+local SS = game:GetService("ServerStorage")
+local RepS = game:GetService("ReplicatedStorage")
+
+-----------------------------------------------------
+local EnemyAI = require(SS.SSModules.EnemyAI)
+local EnemyTypes = require(RepS.Modules.EnemyTypes)
+local PlayerParrying = RepS.Events:FindFirstChild("PlayerParrying")
+local SlamHitEvent = RepS.Events:FindFirstChild("SlamHit")
+
+
+-----------------------------------------------------
+local EnemyFolder = workspace:WaitForChild("Enemies")
+local parryingPlayer = {}
+local activeEnemies = {} -- Caches active enemies to avoid findfirstchild spam
+
+-- // Events
+-----------------------------------------------------
+
+SlamHitEvent.OnServerEvent:Connect(function(player, hitHum)
+	if not hitHum then return end
+	local SLAM_DAMAGE = 50
+	
+	if hitHum:IsA("Humanoid") and hitHum.Health > 0 then
+	hitHum:TakeDamage(SLAM_DAMAGE)
+	end
+end)
+
+PlayerParrying.OnServerEvent:Connect(function(player, isParrying)
+	parryingPlayer[player] = isParrying
+end)
+
+-- Prevent memory leaks
+Players.PlayerRemoving:Connect(function(player)
+	parryingPlayer[player] = nil
+end)
+
+
+
+
+
+
+-----------------------------------------------------
+
+-- // Helpers
+
+
+local function GetClosestPlayer(enemyHRP)
+	local closestPlayer = nil
+	local shortestDist = math.huge
+	
+	for _, player in pairs(Players:GetPlayers()) do
+		local char = player.Character
+		local hum = char:FindFirstChild("Humanoid")
+
+		if char and hum and hum.Health > 0 then 
+			local dist = (enemyHRP.Position - char.PrimaryPart.Position).Magnitude
+			if dist < shortestDist then 
+				shortestDist = dist
+				closestPlayer = player
+			end
+		end
+	end
+	return closestPlayer, shortestDist
+end
+
+
+local function CalculateHealthToGain(enemyHRP)
+	local closestPlayer, shortestDist = GetClosestPlayer(enemyHRP)
+
+	local hpToIncrement = 10
+	local HealthToGain = 0
+
+	if shortestDist > 100 then
+		return 0, closestPlayer
+	end
+
+
+	-- Expotential multiplier
+	-- if 100 studs, multiply by 0, if 90, by 10, etc etc.
+
+	-- Example: At 100 studs, (100-100)/10 = 0 -> 2^0 = 1 -> 1 * 0.5 = 0.5
+	local exponent = (100 - shortestDist) / 10
+	local multiplier = 0.5 * (1.3 ^ exponent)
+
+	HealthToGain = hpToIncrement * multiplier
+	return HealthToGain, closestPlayer
+end
+
+
+
+------------------------------------------------------------------------------------
+-- TODO spawn multiple enemies in different places based off the same trigger touch
 local function SpawnEnemy(typeName, spawnLocation, amount)
 	amount = amount or 1
-
 	local config = EnemyTypes[typeName]
-
-
+	if not config then warn("No config found for: " .. tostring(typeName)) return end
+	
 	for i = 1, amount do
-		local newEnemy = ss.EnemyModels.Rig:Clone()
-
+		local newEnemy = SS.EnemyModels.Rig:Clone() 
 		newEnemy.Name = typeName
-		newEnemy.Parent = workspace.Enemies
+		newEnemy:SetAttribute("EnemyType", typeName)
+		-- For the future, change to config.Model (since enemy model will be in it's config)
+		
+		EnemyAI.Initialize(newEnemy, config)
+		
 		local offset = Vector3.new(math.random(-2, 2), 0, math.random(-2, 2))
 		newEnemy:PivotTo(CFrame.new(spawnLocation + offset))
-
-		-- apply stats
-		EnemyAI.Initialize(newEnemy, config)
-
-		-- set network ownership 
-		newEnemy.PrimaryPart:SetNetworkOwner(nil)
+		
+		-- Cache essential components
+		local hrp = newEnemy:WaitForChild("HumanoidRootPart")
+		local hum = newEnemy:WaitForChild("Humanoid")
+		
+		newEnemy.Parent = EnemyFolder
+		hrp:SetNetworkOwner(nil)
+		
+		-- Add to our loop tracking table
+		activeEnemies[newEnemy] = {
+			hrp = hrp,
+			hum = hum,
+			config = config
+		}
 	end
 end
 
 
--- // This script sets up single use triggers that spawn a specific group of enemies(not hard coded, can be changed by changing the attributes in the trigger part.)
--- // the moment a player steps on them
+-- Initialization
+-----------------------------------------------------
 for _, trigger in ipairs(workspace.EnemyTriggers:GetChildren()) do
-	local hasTriggered = false
-	trigger.Touched:Connect(function(hit)
-		if hasTriggered then return end
-
-		local enemyToSpawn = trigger:GetAttribute("EnemyType") 
-		local AmountToSpawn = trigger:GetAttribute("Amount") 
-		local WhereToSpawn = trigger:GetAttribute("SpawnLocation")
-
+	local connection
+	
+	connection = trigger.Touched:Connect(function(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if player then
-			hasTriggered = true
-			SpawnEnemy(enemyToSpawn, WhereToSpawn, AmountToSpawn)
-
+		if not player then return end 
+		
+		connection:Disconnect() -- only disconnect after a confirmed player touch
+		
+			print("There's a player in me!")
+			local enemyToSpawn = trigger:GetAttribute("EnemyType")
+			local amountToSpawn = trigger:GetAttribute("Amount") 
+			local whereToSpawn = trigger:GetAttribute("SpawnLocation") 
+			
+			SpawnEnemy(enemyToSpawn, whereToSpawn, amountToSpawn)
 			trigger:Destroy()
-
-
-		end
 	end)
-end 
-
-
--- // Telling the AI to move once its found a target. It checks for the target every 0.5 seconds.
-while task.wait(0.5) do -- How often the AI updates
-	for _, enemy in pairs(EnemyFolder:GetChildren()) do
-		local hrp = enemy:FindFirstChild("HumanoidRootPart")
-		local hum = enemy:FindFirstChild("Humanoid")
-
-		if hrp and hum and hum.Health > 0 then
-			-- 1. Find the target
-			local target, dist = EnemyAI.GetClosestPlayer(hrp)
-			
-			local EnemyType = enemy:GetAttribute("EnemyType")
-
-			if target then
-				-- 2. Move
-				EnemyAI.Move(enemy, target, dist)
-			
-		else -- if the enemy is dead
-			Debris:AddItem(enemy, 1)
-			print("Enemy destroyed")
-		end
-		end
-	end
 end
-
-
--- Name, spawnlocation, and amount
--- SpawnEnemy("Tank", CFrame.new(0, 5, 10), 5)
--- SpawnEnemy("Runner", CFrame.new(5, 5, 15), 5)
+ 
+ 
+ -- // Main AI loop
+-----------------------------------------------------
+ while task.wait(0.001) do
+		for enemy, data in pairs(activeEnemies) do
+			-- Fast checks
+			if data.hum.Health <= 0 then
+				
+				-- this is ugly and prolly convoluted but eh who gives a care
+				local healthToGain, targetPlayer = CalculateHealthToGain(data.hrp)
+				
+				if healthToGain > 0 and targetPlayer then
+					local char = targetPlayer.Character
+					local hum = char:FindFirstChild("Humanoid")
+					
+					if hum then 
+						hum.Health = math.min(hum.Health + healthToGain, 100)
+					end
+				end
+				
+				activeEnemies[enemy] = nil -- Remove from the enemy loop
+				enemy:SetAttribute("Dying", true)
+				Debris:AddItem(enemy, 1)
+				print("Enemy died! Adding... " .. healthToGain)
+				
+				-- You can notify the enemydied event here for visual ui
+				-- EnemyDied:FireClient(enemy)
+				continue
+			end
+			
+			
+		-- Execute AI logic in a separate thread so yielding doesn't block other enemies
+		task.spawn(function()
+			local target, dist = EnemyAI.GetClosestPlayer(data.hrp)
+			if not target then return end 
+			
+				if data.config.EnemyRange == "Ranged" then
+					EnemyAI.RangeMove(enemy, target, dist, parryingPlayer)
+				elseif data.config.EnemyRange == "Short" then
+					EnemyAI.Move(enemy, target, dist, parryingPlayer)
+			end
+		end)
+	end
+ end
