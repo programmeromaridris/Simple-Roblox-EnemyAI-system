@@ -1,47 +1,69 @@
-// This script is kept in ServerStorage, so that it's easily accessible by the server.
-
-// Services
 local PFS = game:GetService("PathfindingService")
 local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local RS = game:GetService("RunService")
+local StyleManager = require(game.ReplicatedStorage.Modules.StyleManager)
+local PlayerState = require(game.ReplicatedStorage.Modules.PlayerState)
+
 local EnemyAI = {}
 
 
--- // Config
-local ATTACK_RANGE = 5
-local ATTACK_DAMAGE = 10
-local ATTACK_COOLDOWN = 0.2
-
-local PATH_UPDATE_DELAY = 0.6 -- how often to recalculate paths
-
-
--- // Constructor: assign each new enemy it's stats from the EnemyTypes config table.
-function EnemyAI.Initialize(enemy, config)
+-- // helper functions
+-----------------------------------------------------
+function EnemyAI.StayStill(enemy)
 	local humanoid = enemy:FindFirstChild("Humanoid")
+	if humanoid then
+		humanoid:MoveTo(enemy.PrimaryPart.Position)
+	end
+end
 
-	enemy:SetAttribute("EnemyID", math.random(1, 10000))
-	enemy:SetAttribute("Damage", config.Damage)
-	enemy:SetAttribute("Cooldown", config.Cooldown)
-	enemy:SetAttribute("Range", config.Range)
-	enemy:SetAttribute("RangeStyle", config.EnemyRange)
-	enemy:SetAttribute("LastAttack", 0)
+-----------------------------------------------------
+function EnemyAI.IsOffCooldown(enemy)
+	local last = enemy:GetAttribute("LastAttack")
+	return tick() - last >= enemy:GetAttribute("Cooldown")
+end
 
-	humanoid.MaxHealth = config.Health
-	humanoid.Health = config.Health
-	humanoid.WalkSpeed = config.Speed
 
+
+-----------------------------------------------------
+function EnemyAI.ResetCooldown(enemy)
+	enemy:SetAttribute("LastAttack", tick())
+end
+
+
+
+
+-----------------------------------------------------
+function EnemyAI.GetSurroundOffset(enemy)
+
+	local seed = enemy:GetAttribute("EnemyID")
+	local angle = (seed * 137.5) % 360
+	local radius = 6
+	return Vector3.new(math.cos(math.rad(angle)) * radius, 0, math.sin(math.rad(angle)) * radius)
 
 end
 
 
--- // Helper function that will allow the AI to calculate it's nearest player to start chasing.
--- // We circle through every player in the server, then subtract the enemy's distance from the player's distance and return the closest one.
+function EnemyAI.GetOffset(enemy)
+
+	local seed = math.random(1, 5)
+	local angle = (seed * 137.5) % 360
+	local radius = 6
+	return Vector3.new(math.cos(math.rad(angle)) * radius, 0, math.sin(math.rad(angle)) * radius)
+
+end
+
+-----------------------------------------------------
 function EnemyAI.GetClosestPlayer(enemyPart)
+	if not enemyPart then warn("I can't find the enemyPart!") return end
 	local closestPlayer = nil
 	local shortestDist = math.huge
 
 	for _, player in pairs(Players:GetPlayers()) do
 		local char = player.Character
-		if char and  char:FindFirstChild("Humanoid") and char.Humanoid.Health > 0 then 
+		local hum = char:FindFirstChild("Humanoid")
+		
+		if char and hum and hum.Health > 0 then 
 			local dist = (enemyPart.Position - char.PrimaryPart.Position).Magnitude
 			if dist < shortestDist then 
 				shortestDist = dist
@@ -53,83 +75,281 @@ function EnemyAI.GetClosestPlayer(enemyPart)
 end
 
 
+-------------------------------------------------------------------------
 
--- // We shoot a raycast from the enemy's primarypart. if it hits the target, or the raycast hasn't struck an obstacle,
--- // then it has a "line of sight" and can move to attack the target.
+
+
+-- // =======================================================
+-- // Initialize 
+-- // =======================================================
+
+
+function EnemyAI.Initialize(enemy, config)
+	local humanoid = enemy:FindFirstChild("Humanoid")
+
+	local attributes = {
+		EnemyID = math.random(1, 50000),
+		Damage = config.Damage,
+		Cooldown = config.Cooldown,
+		Range = config.Range,
+		Hitbox = config.Hitbox,
+		ProjSpeed = config.ProjSpeed,
+		LastAttack = 0,
+	}
+	
+	for name, value in pairs(attributes) do
+		enemy:SetAttribute(name, value)
+	end
+	
+	humanoid.MaxHealth = config.Health
+	humanoid.Health = config.Health
+	humanoid.WalkSpeed = config.Speed
+	
+	-- event listener that fires exaclty once when the enemy dies
+	-- once cleans up the connection immediately after firing
+	humanoid.Died:Once(function()
+		StyleManager.AddStyle("Kill")
+	end)
+end
+
+
+
+
+
+-- // =======================================================
+-- // Enemy movement functions
+-- // =======================================================
+
 
 function EnemyAI.CheckLineOfSight(enemy, target)
-	local hrp = enemy.PrimaryPart
-	local targetHrp = target.PrimaryPart
-
-	local rayDirection = (targetHrp.Position - hrp.Position)
+	
+	if not (enemy.PrimaryPart and target.PrimaryPart) then return end
+	
+	local hrpPos = enemy.PrimaryPart.Position
+	local rayDirection = (target.PrimaryPart.Position - hrpPos)
+	
 	local raycastParams = RaycastParams.new()
-	raycastParams.FilterDescendantsInstances = {enemy, workspace.Enemies} -- ignore other enemies and itself
+	raycastParams.FilterDescendantsInstances = {enemy, workspace.Enemies}
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-
-	local result = workspace:Raycast(hrp.Position, rayDirection, raycastParams)
-
-	-- If the ray hits the target (or nothing, meaning air), we have LoS
-	if result and result.Instance:IsDescendantOf(target) then
-		return true
-	end
-	return false
+	
+	local result = workspace:Raycast(hrpPos, rayDirection, raycastParams)
+	return result and result.Instance:IsDescendantOf(target) or false
 end
 
 
 
--- // This prevents enemies conga-lining behind eachother. We use the enemy's unique ID in the workspace as an offset.
-function EnemyAI.GetSurroundOffset(enemy)
-
-
-	local seed = enemy:GetAttribute("EnemyID") 
-	local angle  = (seed * math.random(15, 30)) % 360
-	local radius = 6 -- distance from player
-
-	local x = math.cos(math.rad(angle)) * radius
-	local z = math.sin(math.rad(angle)) * radius
-
-	return Vector3.new(x, 0, z)
-
-end
-
-
--- // Lazy way of dealing with damage. This just subtracts the enemies damage from the target's health -If it is in range.
-function EnemyAI.Attack(enemy, target)
-	local humanoid = enemy:FindFirstChild("Humanoid")
-	local targetHum = target:FindFirstChild("Humanoid")
-
-	local lastAttack = enemy:GetAttribute("LastAttack") or 0
-	if tick() - lastAttack >= ATTACK_COOLDOWN then
-		targetHum:TakeDamage(ATTACK_DAMAGE) 
-		enemy:SetAttribute("LastAttack", tick())
-		print("Enemy dealt damage!")
-	end
-end
-
-
--- // Checking if it has a line of sight, it begins chasing the target. 
-function EnemyAI.Move(enemy, target, dist)
-	local humanoid = enemy:FindFirstChild("Humanoid")
-	local hrp = enemy:FindFirstChild("HumanoidRootPart")
-	local range = enemy:GetAttribute("Range")
-
-	local hasLoS = EnemyAI.CheckLineOfSight(enemy, target)
-
-	if hasLoS then
-		-- state chasing
-		enemy:SetAttribute("LastKnownPos", target.PrimaryPart.Position)
-
-		if dist <= range then
-			EnemyAI.Attack(enemy, target)
-			humanoid:MoveTo(hrp.Position)
-		else
-			local offset = EnemyAI.GetSurroundOffset(enemy)
-			humanoid:MoveTo(target.PrimaryPart.Position + offset)
+-----------------------------------------------------
+function EnemyAI.MoveWithPathfinding(enemy, targetPosition)
+	local hum = enemy:FindFirstChild("Humanoid")
+	if not (hum and enemy.PrimaryPart) then return end
+	
+	local path = PFS:CreatePath({AgentCanJump = true})
+	enemy:SetAttribute("IsPathing", true) 
+	
+	local success, err = pcall(function()
+		path:ComputeAsync(enemy.PrimaryPart.Position, targetPosition)
+	end)
+	
+	if success and path.Status == Enum.PathStatus.Success then
+		for _, waypoint in ipairs(path:GetWaypoints()) do
+			if waypoint.Action == Enum.PathWaypointAction.Jump then
+				hum.Jump = true
+			end
+			hum:MoveTo(waypoint.Position)
+			hum.MoveToFinished:Wait()
 		end
 	else
-		-- state searching
-		enemy:SetAttribute("LastKnownPos", nil)
+		hum:MoveTo(targetPosition) -- fallback
+	end
+	enemy:SetAttribute("IsPathing", false) 
+end
 
+
+
+-- // =======================================================
+-- // Enemy attack functions
+-- // =======================================================
+
+
+function EnemyAI.ShootProjectile(enemy, target, parryingPlayer)
+	local hrp = enemy:FindFirstChild("HumanoidRootPart")
+	local targethrp = target:FindFirstChild("HumanoidRootPart")
+	if not (hrp and targethrp) or not EnemyAI.IsOffCooldown(enemy) then return end
+	
+	EnemyAI.ResetCooldown(enemy)
+	
+	local dmg = enemy:GetAttribute("Damage")
+	local hitboxSize = enemy:GetAttribute("Hitbox")
+	local speed = enemy:GetAttribute("ProjSpeed")
+	local dir = (targethrp.Position - hrp.Position).Unit
+	local offset = (EnemyAI.GetOffset()).Unit
+	local startPos = hrp.Position + (dir * 3)
+	
+	-- visual projectile
+	local proj = Instance.new("Part")
+	proj.Size = Vector3.new(1, 1, 1) * hitboxSize
+	proj.Shape = Enum.PartType.Ball
+	proj.Color = Color3.fromRGB(255, 0, 0)
+	proj.Material = Enum.Material.Neon
+	proj.Anchored = true
+	proj.CanCollide, proj.CanQuery = false, false
+	proj.CFrame = CFrame.new(startPos)
+	proj.Parent = workspace:FindFirstChild("Projectiles") or workspace
+	Debris:AddItem(proj, 5)
+
+	
+	local isParried = false
+	local connection = nil
+	
+	
+	-- raycast
+	local RayParams = RaycastParams.new()
+	RayParams.FilterType = Enum.RaycastFilterType.Exclude
+	
+	connection = RS.Heartbeat:Connect(function(dt)
+		if not proj.Parent then 
+			connection:Disconnect()
+			return
+		end
+		
+		local distToMove = speed * dt
+		local currentPos = proj.Position
+		
+		RayParams.FilterDescendantsInstances = isParried and {target} or {enemy, proj}
+		local hitResult = workspace:Spherecast(currentPos, hitboxSize / 2, dir * distToMove, RayParams)
+		proj.CFrame = proj.CFrame + (dir * distToMove)
+		
+		if hitResult then
+			local character = hitResult.Instance.Parent
+			local hitHum = character:FindFirstChild("Humanoid")
+			
+			if hitHum and hitHum.Health > 0 then
+				if character == target then
+					local player = Players:GetPlayerFromCharacter(character)
+					if player and parryingPlayer[player] then
+						isParried = true
+						dir = -dir + offset
+						speed *= 1.5
+						StyleManager.AddStyle("Parry")
+						return -- fly back
+					else
+						hitHum:TakeDamage(dmg)
+						proj:Destroy()
+						connection:Disconnect()
+						return
+					end
+				elseif character == enemy and isParried then
+					hitHum:TakeDamage(dmg * 2)
+					StyleManager.AddStyle("Parry")
+					proj:Destroy()
+					connection:Disconnect()
+					return
+				end	
+			elseif hitResult.Instance.CanCollide and hitResult.Instance.Name ~= "Baseplate" then
+				proj:Destroy()
+				connection:Disconnect()		
+			end
+		end
+	end)
+	
+end
+
+
+-----------------------------------------------------
+function EnemyAI.Attack(enemy, target, parryingPlayer)
+	local hrp = enemy:FindFirstChild("HumanoidRootPart")
+	if not hrp or not EnemyAI.IsOffCooldown(enemy) then return end
+
+		EnemyAI.ResetCooldown(enemy)
+		-- reset the timer
+		
+		local dmg = enemy:GetAttribute("Damage")
+		local hitbox = enemy:GetAttribute("Hitbox")
+		local attackPos = (hrp.CFrame * CFrame.new(0, 0, -4)).Position
+		
+		-- params
+		local overlapParams = OverlapParams.new()
+		overlapParams.FilterDescendantsInstances = {enemy} -- dont count yourself
+		overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+		
+	local partsinHitbox = workspace:GetPartBoundsInBox(CFrame.new(attackPos), Vector3.new(1, 1, 1) * hitbox, overlapParams)
+		local charactersHit = {}
+		
+		
+	
+		for _, part in ipairs(partsinHitbox) do
+			local character = part.Parent
+			local hitHum = character:FindFirstChild("Humanoid")
+			
+			if hitHum and hitHum.Health > 0 and not charactersHit[character] then
+				charactersHit[character] = true -- theyre hit
+			
+			local player = Players:GetPlayerFromCharacter(character) 
+			if player and not parryingPlayer[player] then
+				hitHum:TakeDamage(dmg)
+			end
+		end
+	end
+end
+
+
+
+
+
+
+
+
+-- // =======================================================
+-- // Enemy movement functions
+-- // =======================================================
+
+-----------------------------------------------------
+function EnemyAI.RangeMove(enemy, target, dist, parryingPlayer)
+	local hrp = enemy:FindFirstChild("HumanoidRootPart")
+	local targetHrp = target:FindFirstChild("HumanoidRootPart")
+	if not (hrp and targetHrp) then return end
+	
+	local range = enemy:GetAttribute("Range")
+	local hasLoS = EnemyAI.CheckLineOfSight(enemy, target)
+	
+	
+	if hasLoS and dist <= range then
+		EnemyAI.ShootProjectile(enemy, target, parryingPlayer)
+	end
+	
+	if not enemy:GetAttribute("IsPathing") then
+		
+		if dist < (range * 0.7) then
+			local retreatPos = targetHrp.Position + ((hrp.Position - targetHrp.Position).Unit * range)
+			EnemyAI.MoveWithPathfinding(enemy, retreatPos + EnemyAI.GetSurroundOffset(enemy))
+		elseif dist > (range + 2) then
+			EnemyAI.MoveWithPathfinding(enemy, targetHrp.Position + EnemyAI.GetSurroundOffset(enemy))
+		else
+			EnemyAI.StayStill(enemy)
+		end		
+		
+	end
+end
+
+
+-----------------------------------------------------
+function EnemyAI.Move(enemy, target, dist, parryingPlayer)
+	if not (enemy.PrimaryPart and target.PrimaryPart) then return end
+	local range = enemy:GetAttribute("Range")
+	
+	if EnemyAI.CheckLineOfSight(enemy, target) then
+		enemy:SetAttribute("LastKnownPos", target.PrimaryPart.Position)
+		
+		if dist <= range then
+			EnemyAI.Attack(enemy, target, parryingPlayer)
+			EnemyAI.StayStill(enemy)
+			
+		elseif not enemy:GetAttribute("IsPathing") then
+			EnemyAI.MoveWithPathfinding(enemy, target.PrimaryPart.Position + EnemyAI.GetSurroundOffset(enemy))
+		end
+		
+	else
+		enemy:SetAttribute("LastKnownPos", nil)
 	end
 end
 
