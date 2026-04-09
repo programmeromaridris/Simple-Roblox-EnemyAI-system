@@ -1,36 +1,47 @@
--- // This script resides in ReplicatedStorage.
 local EnemyTypes = {
 
 	["Runner"] = {
 		Speed = 30,
+		EnemyRange = "Short",
 		Damage = 18,
 		Range = 1,
-		Cooldown = 0.5,
+		Hitbox = 10,
+		Cooldown = 2.5,
+		ProjSpeed = 0,
 		Health = 50
 
 	}, 
 
 	["Tank"] = {
 		Speed = 19,
+		EnemyRange = "Short",
 		Damage = 30,
 		Range = 5,
-		Cooldown = 1,
+		Hitbox = 15,
+		Cooldown = 2.5,
+		ProjSpeed = 0,
 		Health = 300
 	},
 
 	["Walker"] = {
 		Speed = 23,
+		EnemyRange = "Short",
 		Damage = 10,
 		Range = 5,
-		Cooldown = 0.8,
+		Hitbox = 10,
+		Cooldown = 1.5,
+		ProjSpeed = 0,
 		Health = 100
 	},
 	
 	["Archer"] = {
 		Speed = 23,
-		Damage = 10,
-		Range = 10,
-		Cooldown = 0.8,
+		EnemyRange = "Ranged",
+		Damage = 50,
+		Range = 50,
+		Hitbox = 5,
+		Cooldown = 2.5,
+		ProjSpeed = 40, -- projectile speed
 		Health = 100
 	}
 
